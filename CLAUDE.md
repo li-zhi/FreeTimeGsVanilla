@@ -101,6 +101,60 @@ input_dir/
 └── ...
 ```
 
+### Generating Per-Frame Point Clouds (RoMa + COLMAP)
+
+The original FreeTimeGS paper uses RoMa for dense feature matching followed by COLMAP triangulation:
+
+**Step 1: Install RoMa**
+```bash
+pip install romatch
+```
+
+**Step 2: Feature Matching with RoMa**
+```python
+from romatch import roma_outdoor
+import numpy as np
+
+roma_model = roma_outdoor(device="cuda")
+
+# Match features between multi-view images for each frame
+warp, certainty = roma_model.match(imA_path, imB_path, device="cuda")
+matches, certainty = roma_model.sample(warp, certainty)
+kptsA, kptsB = roma_model.to_pixel_coordinates(matches, H_A, W_A, H_B, W_B)
+```
+
+**Step 3: Triangulate with COLMAP**
+```bash
+# Extract features (or import RoMa matches)
+colmap feature_extractor --database_path db.db --image_path images/
+
+# Match features across views
+colmap sequential_matcher --database_path db.db
+
+# Triangulate with known camera poses
+colmap point_triangulator \
+    --database_path db.db \
+    --image_path images/ \
+    --input_path sparse/known_poses/ \
+    --output_path sparse/triangulated/
+```
+
+**Step 4: Export to NPY format**
+```python
+import pycolmap
+
+# Load triangulated points
+reconstruction = pycolmap.Reconstruction("sparse/triangulated/")
+points3d = np.array([p.xyz for p in reconstruction.points3D.values()], dtype=np.float32)
+colors = np.array([p.color for p in reconstruction.points3D.values()], dtype=np.float32)
+
+# Save per-frame (after filtering by visibility)
+np.save(f"points3d_frame{frame_idx:06d}.npy", points3d)
+np.save(f"colors_frame{frame_idx:06d}.npy", colors)
+```
+
+**Sample Dataset**: [Neural 3D Video Dataset](https://github.com/facebookresearch/Neural_3D_Video/releases/tag/v1.0) - 21 synchronized GoPro videos with camera poses (CC-BY-NC 4.0)
+
 **COLMAP Data** (for trainer):
 ```
 data_dir/
