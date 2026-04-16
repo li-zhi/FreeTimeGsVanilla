@@ -12,3 +12,4 @@ test_renders*/
 *.log
 uv.lock
 .claude/
+output/
