@@ -2,7 +2,7 @@
 """
 Tests for combine_frames_fast_keyframes.py
 
-Uses sample data from output/actor1_4_subseq/ (a subset of frames).
+Uses sample data from tests/resources/triangulate_data/ (frames 0, 1, 2, 5, 6, 10).
 """
 
 import os
@@ -23,49 +23,28 @@ from combine_frames_fast_keyframes import (
 )
 
 
-# Path to output data (real triangulated point clouds)
-OUTPUT_DIR = os.path.join(os.path.dirname(__file__), '..', 'output', 'actor1_4_subseq')
-
-
-def frames_available():
-    """Check if output frames are available for testing."""
-    if not os.path.exists(OUTPUT_DIR):
-        return False
-    # Check if at least 3 frames exist
-    for i in range(3):
-        if not os.path.exists(os.path.join(OUTPUT_DIR, f'points3d_frame{i:06d}.npy')):
-            return False
-    return True
+# Path to test data (triangulated point clouds: frames 0, 1, 2, 5, 6, 10)
+TRIANGULATE_DATA_DIR = os.path.join(os.path.dirname(__file__), 'resources', 'triangulate_data')
 
 
 @pytest.fixture(scope="module")
-def temp_frame_dir():
-    """Create a temporary directory with a subset of frames for testing."""
-    if not frames_available():
-        pytest.skip("Output frames not available in output/actor1_4_subseq")
-
-    with tempfile.TemporaryDirectory() as tmpdir:
-        # Copy frames 0, 1, 2, 5, 6, 10 for testing keyframe extraction
-        frames_to_copy = [0, 1, 2, 5, 6, 10]
-        for frame_idx in frames_to_copy:
-            points_src = os.path.join(OUTPUT_DIR, f'points3d_frame{frame_idx:06d}.npy')
-            colors_src = os.path.join(OUTPUT_DIR, f'colors_frame{frame_idx:06d}.npy')
-
-            if os.path.exists(points_src):
-                shutil.copy(points_src, tmpdir)
-            if os.path.exists(colors_src):
-                shutil.copy(colors_src, tmpdir)
-
-        yield tmpdir
+def frame_dir():
+    """Return the path to the triangulate data directory."""
+    if not os.path.exists(TRIANGULATE_DATA_DIR):
+        pytest.skip("Test data not available in tests/resources/triangulate_data")
+    # Check if at least frame 0 exists
+    if not os.path.exists(os.path.join(TRIANGULATE_DATA_DIR, 'points3d_frame000000.npy')):
+        pytest.skip("Frame 0 not found in tests/resources/triangulate_data")
+    return TRIANGULATE_DATA_DIR
 
 
 class TestLoadFrameData:
     """Tests for load_frame_data function."""
 
-    def test_load_existing_frame(self, temp_frame_dir):
+    def test_load_existing_frame(self, frame_dir):
         """Test loading an existing frame returns positions and colors."""
         from pathlib import Path
-        positions, colors = load_frame_data(Path(temp_frame_dir), 0)
+        positions, colors = load_frame_data(Path(frame_dir), 0)
 
         assert positions is not None
         assert colors is not None
@@ -73,26 +52,26 @@ class TestLoadFrameData:
         assert positions.shape[1] == 3
         assert colors.shape == positions.shape
 
-    def test_load_nonexistent_frame(self, temp_frame_dir):
+    def test_load_nonexistent_frame(self, frame_dir):
         """Test loading a non-existent frame returns None."""
         from pathlib import Path
-        positions, colors = load_frame_data(Path(temp_frame_dir), 9999)
+        positions, colors = load_frame_data(Path(frame_dir), 9999)
 
         assert positions is None
         assert colors is None
 
-    def test_load_frame_dtypes(self, temp_frame_dir):
+    def test_load_frame_dtypes(self, frame_dir):
         """Test that loaded data has correct dtype."""
         from pathlib import Path
-        positions, colors = load_frame_data(Path(temp_frame_dir), 0)
+        positions, colors = load_frame_data(Path(frame_dir), 0)
 
         assert positions.dtype == np.float32
         assert colors.dtype == np.float32
 
-    def test_load_frame_valid_values(self, temp_frame_dir):
+    def test_load_frame_valid_values(self, frame_dir):
         """Test that loaded data has finite values."""
         from pathlib import Path
-        positions, colors = load_frame_data(Path(temp_frame_dir), 0)
+        positions, colors = load_frame_data(Path(frame_dir), 0)
 
         assert np.all(np.isfinite(positions))
         assert np.all(np.isfinite(colors))
@@ -144,11 +123,11 @@ class TestComputeVelocityKnn:
         assert velocities.shape == (0, 3)
         assert valid_mask.shape == (0,)
 
-    def test_velocity_real_data(self, temp_frame_dir):
+    def test_velocity_real_data(self, frame_dir):
         """Test velocity computation on real triangulated data."""
         from pathlib import Path
-        pos_t, _ = load_frame_data(Path(temp_frame_dir), 0)
-        pos_t1, _ = load_frame_data(Path(temp_frame_dir), 1)
+        pos_t, _ = load_frame_data(Path(frame_dir), 0)
+        pos_t1, _ = load_frame_data(Path(frame_dir), 1)
 
         if pos_t is None or pos_t1 is None:
             pytest.skip("Required frames not available")
@@ -222,10 +201,10 @@ class TestEstimateSceneScale:
         assert stats['suggested_voxel_size'] >= 0.01
         assert stats['suggested_voxel_size'] <= 1.0
 
-    def test_estimate_scale_real_data(self, temp_frame_dir):
+    def test_estimate_scale_real_data(self, frame_dir):
         """Test scene scale estimation on real data."""
         from pathlib import Path
-        positions, _ = load_frame_data(Path(temp_frame_dir), 0)
+        positions, _ = load_frame_data(Path(frame_dir), 0)
 
         if positions is None:
             pytest.skip("Frame 0 not available")
@@ -351,7 +330,7 @@ class TestSmartDensityVelocitySampling:
 class TestIntegration:
     """Integration tests for the full pipeline."""
 
-    def test_full_pipeline_basic(self, temp_frame_dir):
+    def test_full_pipeline_basic(self, frame_dir):
         """Test running the full script with basic settings."""
         import subprocess
 
@@ -361,7 +340,7 @@ class TestIntegration:
             result = subprocess.run([
                 sys.executable,
                 os.path.join(os.path.dirname(__file__), '..', 'src', 'combine_frames_fast_keyframes.py'),
-                '--input-dir', temp_frame_dir,
+                '--input-dir', frame_dir,
                 '--output-path', output_path,
                 '--frame-start', '0',
                 '--frame-end', '10',
@@ -380,7 +359,7 @@ class TestIntegration:
             assert 'durations' in data
             assert 'has_velocity' in data
 
-    def test_full_pipeline_with_sampling(self, temp_frame_dir):
+    def test_full_pipeline_with_sampling(self, frame_dir):
         """Test running the full script with smart sampling."""
         import subprocess
 
@@ -390,7 +369,7 @@ class TestIntegration:
             result = subprocess.run([
                 sys.executable,
                 os.path.join(os.path.dirname(__file__), '..', 'src', 'combine_frames_fast_keyframes.py'),
-                '--input-dir', temp_frame_dir,
+                '--input-dir', frame_dir,
                 '--output-path', output_path,
                 '--frame-start', '0',
                 '--frame-end', '10',
@@ -407,7 +386,7 @@ class TestIntegration:
             # With budget of 10000, should have at most that many points
             assert len(data['positions']) <= 10000
 
-    def test_output_npz_format(self, temp_frame_dir):
+    def test_output_npz_format(self, frame_dir):
         """Test that output NPZ has all expected fields with correct shapes."""
         import subprocess
 
@@ -417,7 +396,7 @@ class TestIntegration:
             result = subprocess.run([
                 sys.executable,
                 os.path.join(os.path.dirname(__file__), '..', 'src', 'combine_frames_fast_keyframes.py'),
-                '--input-dir', temp_frame_dir,
+                '--input-dir', frame_dir,
                 '--output-path', output_path,
                 '--frame-start', '0',
                 '--frame-end', '10',
@@ -445,7 +424,7 @@ class TestIntegration:
             assert data['durations'].dtype == np.float32
             assert data['has_velocity'].dtype == bool
 
-    def test_output_time_values(self, temp_frame_dir):
+    def test_output_time_values(self, frame_dir):
         """Test that output time values are correctly normalized."""
         import subprocess
 
@@ -455,7 +434,7 @@ class TestIntegration:
             result = subprocess.run([
                 sys.executable,
                 os.path.join(os.path.dirname(__file__), '..', 'src', 'combine_frames_fast_keyframes.py'),
-                '--input-dir', temp_frame_dir,
+                '--input-dir', frame_dir,
                 '--output-path', output_path,
                 '--frame-start', '0',
                 '--frame-end', '10',
@@ -476,7 +455,7 @@ class TestIntegration:
             unique_times = np.unique(times)
             assert len(unique_times) >= 2  # At least 2 keyframes
 
-    def test_output_colors_normalized(self, temp_frame_dir):
+    def test_output_colors_normalized(self, frame_dir):
         """Test that output colors are normalized to [0, 1]."""
         import subprocess
 
@@ -486,7 +465,7 @@ class TestIntegration:
             result = subprocess.run([
                 sys.executable,
                 os.path.join(os.path.dirname(__file__), '..', 'src', 'combine_frames_fast_keyframes.py'),
-                '--input-dir', temp_frame_dir,
+                '--input-dir', frame_dir,
                 '--output-path', output_path,
                 '--frame-start', '0',
                 '--frame-end', '10',
@@ -502,7 +481,7 @@ class TestIntegration:
             assert colors.min() >= 0.0
             assert colors.max() <= 1.0
 
-    def test_metadata_saved(self, temp_frame_dir):
+    def test_metadata_saved(self, frame_dir):
         """Test that metadata is saved in the NPZ file."""
         import subprocess
 
@@ -512,7 +491,7 @@ class TestIntegration:
             result = subprocess.run([
                 sys.executable,
                 os.path.join(os.path.dirname(__file__), '..', 'src', 'combine_frames_fast_keyframes.py'),
-                '--input-dir', temp_frame_dir,
+                '--input-dir', frame_dir,
                 '--output-path', output_path,
                 '--frame-start', '0',
                 '--frame-end', '10',
@@ -535,19 +514,19 @@ class TestIntegration:
 class TestEdgeCases:
     """Tests for edge cases and error handling."""
 
-    def test_missing_intermediate_frame(self, temp_frame_dir):
+    def test_missing_intermediate_frame(self, frame_dir):
         """Test handling when an intermediate frame is missing."""
         from pathlib import Path
 
         # Frame 3 is not in our test set, so keyframes 0, 5, 10 should still work
         # but velocity computation for frame 5 might use frame 6
-        pos, _ = load_frame_data(Path(temp_frame_dir), 5)
+        pos, _ = load_frame_data(Path(frame_dir), 5)
         assert pos is not None  # Frame 5 exists
 
-        pos_next, _ = load_frame_data(Path(temp_frame_dir), 6)
+        pos_next, _ = load_frame_data(Path(frame_dir), 6)
         assert pos_next is not None  # Frame 6 exists for velocity
 
-    def test_single_frame(self, temp_frame_dir):
+    def test_single_frame(self, frame_dir):
         """Test with only a single frame (no velocity possible)."""
         import subprocess
 
@@ -556,11 +535,11 @@ class TestEdgeCases:
             single_frame_dir = os.path.join(output_dir, 'single')
             os.makedirs(single_frame_dir)
             shutil.copy(
-                os.path.join(temp_frame_dir, 'points3d_frame000000.npy'),
+                os.path.join(frame_dir, 'points3d_frame000000.npy'),
                 single_frame_dir
             )
             shutil.copy(
-                os.path.join(temp_frame_dir, 'colors_frame000000.npy'),
+                os.path.join(frame_dir, 'colors_frame000000.npy'),
                 single_frame_dir
             )
 
@@ -585,7 +564,7 @@ class TestEdgeCases:
             # No valid velocity
             assert np.sum(data['has_velocity']) == 0
 
-    def test_sample_ratio(self, temp_frame_dir):
+    def test_sample_ratio(self, frame_dir):
         """Test that sample_ratio parameter reduces point count."""
         import subprocess
 
@@ -595,7 +574,7 @@ class TestEdgeCases:
             subprocess.run([
                 sys.executable,
                 os.path.join(os.path.dirname(__file__), '..', 'src', 'combine_frames_fast_keyframes.py'),
-                '--input-dir', temp_frame_dir,
+                '--input-dir', frame_dir,
                 '--output-path', output_full,
                 '--frame-start', '0',
                 '--frame-end', '5',
@@ -608,7 +587,7 @@ class TestEdgeCases:
             subprocess.run([
                 sys.executable,
                 os.path.join(os.path.dirname(__file__), '..', 'src', 'combine_frames_fast_keyframes.py'),
-                '--input-dir', temp_frame_dir,
+                '--input-dir', frame_dir,
                 '--output-path', output_half,
                 '--frame-start', '0',
                 '--frame-end', '5',
