@@ -71,6 +71,8 @@ python src/simple_trainer_freetime_4d_pure_relocation.py <config> \
 |------|---------|
 | `src/simple_trainer_freetime_4d_pure_relocation.py` | Main trainer with 4D Gaussian optimization |
 | `src/combine_frames_fast_keyframes.py` | Keyframe extraction and velocity estimation |
+| `src/triangulate_multiview.py` | Multi-view triangulation for per-frame point clouds |
+| `src/convert_calibration_to_colmap.py` | Convert OpenCV calibration to COLMAP sparse format |
 | `src/viewer_4d.py` | Interactive viser/nerfview-based viewer |
 | `src/utils.py` | Helpers (KNN, colormap, PLY loading, camera modules) |
 | `datasets/FreeTime_dataset.py` | COLMAP parser and PyTorch dataset |
@@ -101,7 +103,49 @@ input_dir/
 └── ...
 ```
 
-### Generating Per-Frame Point Clouds (RoMa + COLMAP)
+### Generating Per-Frame Point Clouds
+
+#### Option A: Using triangulate_multiview.py (Recommended)
+
+This repository includes [src/triangulate_multiview.py](src/triangulate_multiview.py) for generating per-frame point clouds from multi-view video with known camera calibration.
+
+```bash
+python src/triangulate_multiview.py \
+    --data-dir /path/to/dataset \
+    --output-dir /path/to/output \
+    --frame-start 0 --frame-end 30 \
+    --device cuda \
+    --confidence-threshold 0.3 \
+    --max-matches 5000
+```
+
+**Input dataset structure:**
+```
+data_dir/
+├── intri.yml          # Camera intrinsics (OpenCV YAML format)
+├── extri.yml          # Camera extrinsics (Rot_XX, T_XX matrices)
+└── images/
+    ├── 00/            # Camera 00
+    │   ├── 000000.jpg
+    │   └── ...
+    ├── 01/            # Camera 01
+    └── ...
+```
+
+**Parameters:**
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `--data-dir` | required | Path to dataset with intri.yml/extri.yml |
+| `--output-dir` | required | Output directory for point clouds |
+| `--frame-start` | 0 | Start frame index |
+| `--frame-end` | None | End frame index (exclusive) |
+| `--use-roma` | True | Use RoMa for matching (falls back to SIFT) |
+| `--use-sift` | False | Force SIFT instead of RoMa |
+| `--confidence-threshold` | 0.3 | Match confidence threshold |
+| `--max-matches` | 5000 | Max matches per camera pair |
+| `--reprojection-threshold` | 5.0 | Max reprojection error in pixels |
+
+#### Option B: Manual RoMa + COLMAP Pipeline
 
 The original FreeTimeGS paper uses RoMa for dense feature matching followed by COLMAP triangulation:
 
@@ -154,6 +198,46 @@ np.save(f"colors_frame{frame_idx:06d}.npy", colors)
 ```
 
 **Sample Dataset**: [Neural 3D Video Dataset](https://github.com/facebookresearch/Neural_3D_Video/releases/tag/v1.0) - 21 synchronized GoPro videos with camera poses (CC-BY-NC 4.0)
+
+### Converting OpenCV Calibration to COLMAP Format
+
+If you have a dataset with OpenCV-style calibration files (`intri.yml`, `extri.yml`), use [src/convert_calibration_to_colmap.py](src/convert_calibration_to_colmap.py) to generate COLMAP sparse reconstruction:
+
+```bash
+python src/convert_calibration_to_colmap.py \
+    --input-dir /path/to/dataset \
+    --output-dir /path/to/output
+```
+
+**Input dataset structure:**
+```
+input_dir/
+├── intri.yml          # Camera intrinsics (K_XX, D_XX matrices)
+├── extri.yml          # Camera extrinsics (Rot_XX, T_XX matrices)
+└── images/
+    ├── 00/            # Camera 00
+    │   ├── 000000.jpg
+    │   └── ...
+    ├── 01/            # Camera 01
+    └── ...
+```
+
+**Output structure:**
+```
+output_dir/
+├── images/                         # Symlinks: cam{XX}_frame{XXXXXX}.jpg
+└── sparse/0/
+    ├── cameras.bin                 # OPENCV camera models
+    ├── images.bin                  # Image poses
+    └── points3D.bin                # Empty (no triangulation)
+```
+
+**Parameters:**
+| Parameter | Description |
+|-----------|-------------|
+| `--input-dir` | Directory with intri.yml, extri.yml, and images/ |
+| `--output-dir` | Output directory for COLMAP format |
+| `--single-frame` | Optional: process only this frame index |
 
 **COLMAP Data** (for trainer):
 ```
