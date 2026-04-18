@@ -18,16 +18,38 @@ import torch
 # Add src to path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 
-from simple_trainer_freetime_4d_pure_relocation import (
-    Config,
-    load_init_npz,
-    load_init_npz_stratified,
-    estimate_voxel_size,
-    smart_sample_points,
-    create_splats_with_optimizers_4d,
-    generate_interpolated_path,
-    _normalize,
-    _viewmatrix,
+# Skip entire module if dependencies are not available (e.g., in CI without CUDA)
+IMPORT_ERROR = ""
+try:
+    from simple_trainer_freetime_4d_pure_relocation import (
+        Config,
+        load_init_npz,
+        load_init_npz_stratified,
+        estimate_voxel_size,
+        smart_sample_points,
+        create_splats_with_optimizers_4d,
+        generate_interpolated_path,
+        _normalize,
+        _viewmatrix,
+    )
+    TRAINER_AVAILABLE = True
+except ImportError as e:
+    TRAINER_AVAILABLE = False
+    IMPORT_ERROR = str(e)
+    # Create dummy placeholders to allow module to load
+    Config = None
+    load_init_npz = None
+    load_init_npz_stratified = None
+    estimate_voxel_size = None
+    smart_sample_points = None
+    create_splats_with_optimizers_4d = None
+    generate_interpolated_path = None
+    _normalize = None
+    _viewmatrix = None
+
+pytestmark = pytest.mark.skipif(
+    not TRAINER_AVAILABLE,
+    reason=f"Trainer dependencies not available: {IMPORT_ERROR}"
 )
 
 # Path to test resources
