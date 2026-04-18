@@ -275,58 +275,68 @@ def main():
     print(f"Created {len(cameras)} camera models")
 
     # Build images dictionary
-    # Each image has its own pose (camera extrinsics are shared across frames)
+    # FreeTimeParser expects ONE image per physical camera (at reference frame)
+    # with nested naming: cam{XX}/{frame}.jpg
+    # The parser will then list all frames from each camera folder
     images = {}
     image_id = 1
 
-    for frame_idx in frame_indices:
-        frame_name = f'{frame_idx:06d}.jpg'
+    # Use first frame as reference for COLMAP poses
+    reference_frame = frame_indices[0]
+    reference_frame_name = f'{reference_frame:06d}.jpg'
 
-        for cam_idx, cam_name in enumerate(camera_names):
-            cam_id = cam_idx + 1
+    for cam_idx, cam_name in enumerate(camera_names):
+        cam_id = cam_idx + 1
 
-            # Get rotation and translation
-            R = extri.get(f'Rot_{cam_name}')
-            T = extri.get(f'T_{cam_name}')
+        # Get rotation and translation
+        R = extri.get(f'Rot_{cam_name}')
+        T = extri.get(f'T_{cam_name}')
 
-            if R is None or T is None:
-                print(f"Warning: Missing extrinsics for camera {cam_name}")
-                continue
+        if R is None or T is None:
+            print(f"Warning: Missing extrinsics for camera {cam_name}")
+            continue
 
-            # COLMAP uses world-to-camera transformation
-            # The calibration appears to be camera-to-world, so we need to invert
-            # R_w2c = R.T, t_w2c = -R.T @ T
-            R_w2c = R.T
-            t_w2c = -R_w2c @ T.flatten()
+        # COLMAP uses world-to-camera transformation
+        # The calibration appears to be camera-to-world, so we need to invert
+        # R_w2c = R.T, t_w2c = -R.T @ T
+        R_w2c = R.T
+        t_w2c = -R_w2c @ T.flatten()
 
-            # Convert to quaternion
-            qvec = rotation_matrix_to_quaternion(R_w2c)
+        # Convert to quaternion
+        qvec = rotation_matrix_to_quaternion(R_w2c)
 
-            # Image name format: cam{cam_name}_frame{frame_idx:06d}.jpg
-            colmap_img_name = f'cam{cam_name}_frame{frame_idx:06d}.jpg'
+        # Image name format: cam{cam_name}/{reference_frame:06d}.jpg (nested)
+        colmap_img_name = f'cam{cam_name}/{reference_frame:06d}.jpg'
 
-            # Create symlink or copy image
+        images[image_id] = {
+            'qvec': qvec,
+            'tvec': t_w2c,
+            'camera_id': cam_id,
+            'name': colmap_img_name
+        }
+
+        image_id += 1
+
+    print(f"Created {len(images)} image entries (one per camera)")
+
+    # Create nested image directory structure with symlinks to ALL frames
+    print("Creating nested image directory structure...")
+    for cam_name in camera_names:
+        cam_dir = colmap_images_dir / f'cam{cam_name}'
+        cam_dir.mkdir(exist_ok=True)
+
+        for frame_idx in frame_indices:
+            frame_name = f'{frame_idx:06d}.jpg'
             src_path = images_dir / cam_name / frame_name
-            dst_path = colmap_images_dir / colmap_img_name
+            dst_path = cam_dir / frame_name
 
             if not dst_path.exists():
                 if src_path.exists():
-                    # Create symlink
                     dst_path.symlink_to(src_path.resolve())
                 else:
                     print(f"Warning: Source image not found: {src_path}")
-                    continue
 
-            images[image_id] = {
-                'qvec': qvec,
-                'tvec': t_w2c,
-                'camera_id': cam_id,
-                'name': colmap_img_name
-            }
-
-            image_id += 1
-
-    print(f"Created {len(images)} image entries")
+    print(f"Linked {len(frame_indices)} frames for {len(camera_names)} cameras")
 
     # Write binary files
     print("Writing cameras.bin...")
@@ -343,10 +353,13 @@ def main():
     print("\nOutput structure:")
     print(f"  {output_dir}/")
     print(f"  ├── images/")
-    print(f"  │   └── cam{{XX}}_frame{{XXXXXX}}.jpg")
+    print(f"  │   ├── cam00/")
+    print(f"  │   │   ├── 000000.jpg")
+    print(f"  │   │   └── ...")
+    print(f"  │   └── cam{{XX}}/")
     print(f"  └── sparse/0/")
-    print(f"      ├── cameras.bin")
-    print(f"      ├── images.bin")
+    print(f"      ├── cameras.bin  (one model per camera)")
+    print(f"      ├── images.bin   (one entry per camera at reference frame)")
     print(f"      └── points3D.bin")
 
 

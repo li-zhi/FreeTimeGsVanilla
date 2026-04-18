@@ -1619,11 +1619,14 @@ class FreeTime4DRunner:
                 transform=transform,
             )
 
-        # Filter distant points
+        # Filter distant points (use adaptive threshold based on point cloud extent)
         points = init_data['positions']
-        max_dist = 5.0 * self.scene_scale
+        point_extent = torch.norm(points, dim=1).max().item()
+        # Use the larger of: 5x scene scale or 1.5x point cloud extent
+        max_dist = max(5.0 * self.scene_scale, 1.5 * point_extent)
         dists = torch.norm(points, dim=1)
         valid = dists < max_dist
+        print(f"[FreeTime4D] Point filtering: extent={point_extent:.1f}, max_dist={max_dist:.1f}")
 
         for key in init_data:
             init_data[key] = init_data[key][valid]

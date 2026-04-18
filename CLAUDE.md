@@ -10,6 +10,31 @@ FreeTimeGSVanilla is a minimal implementation of **FreeTimeGS** (CVPR 2025) for 
 - Position evolves as: `x(t) = x + v * (t - t_canonical)`
 - Temporal opacity: `σ(t) = exp(-0.5 * ((t - t_canonical) / duration)²)`
 
+## Environment Setup
+
+```bash
+# Create virtual environment with Python 3.12
+uv venv .venv --python 3.12
+
+# Activate the environment first
+source .venv/bin/activate
+
+# Install torch with CUDA 11.8 support first (required for build dependencies)
+uv pip install torch torchvision --index-url https://download.pytorch.org/whl/cu118
+
+# Install numpy (required for building some packages)
+uv pip install "numpy>=1.26,<2.0"
+
+# Install all dependencies in editable mode
+uv pip install -e . --no-build-isolation
+```
+
+**Important Notes:**
+- gsplat is pinned to v1.5.3 in `pyproject.toml` for CUDA 11.8 compatibility
+- The `--no-build-isolation` flag is required because gsplat and other CUDA packages need torch available during build
+- If you encounter CUDA version mismatch errors, ensure torch is installed with the correct CUDA version first
+- VSCode Python interpreter is configured in `.vscode/settings.json` to use `.venv/bin/python`
+
 ## Common Commands
 
 ### Full Pipeline (Keyframe Extraction + Training)
@@ -168,13 +193,19 @@ input_dir/
     └── ...
 ```
 
-**Output structure:**
+**Output structure (nested format for FreeTimeParser):**
 ```
 output_dir/
-├── images/                         # Symlinks: cam{XX}_frame{XXXXXX}.jpg
+├── images/
+│   ├── cam00/                      # Nested camera folders
+│   │   ├── 000000.jpg              # Symlinks to original images
+│   │   ├── 000001.jpg
+│   │   └── ...
+│   ├── cam01/
+│   └── ...
 └── sparse/0/
-    ├── cameras.bin                 # OPENCV camera models
-    ├── images.bin                  # Image poses
+    ├── cameras.bin                 # OPENCV camera models (one per camera)
+    ├── images.bin                  # Image poses (one entry per camera at reference frame)
     └── points3D.bin                # Empty (no triangulation)
 ```
 
@@ -185,16 +216,21 @@ output_dir/
 | `--output-dir` | Output directory for COLMAP format |
 | `--single-frame` | Optional: process only this frame index |
 
-**COLMAP Data** (for trainer):
+**COLMAP Data** (for trainer - uses nested format):
 ```
 data_dir/
 ├── images/
-│   └── cam01_frame000000.jpg
+│   ├── cam00/
+│   │   ├── 000000.jpg
+│   │   └── ...
+│   └── cam01/
 └── sparse/0/
     ├── cameras.bin
     ├── images.bin
     └── points3D.bin
 ```
+
+**Note:** The FreeTimeParser auto-detects nested vs flat image naming. Images in `images.bin` use the format `cam{XX}/{frame:06d}.jpg` to match the nested folder structure.
 
 ### NPZ Format
 
