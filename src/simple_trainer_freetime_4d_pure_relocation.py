@@ -1674,7 +1674,7 @@ class FreeTime4DRunner:
         if not os.path.exists(ckpt_path):
             raise FileNotFoundError(f"Checkpoint not found: {ckpt_path}")
 
-        ckpt = torch.load(ckpt_path, map_location=self.device)
+        ckpt = torch.load(ckpt_path, map_location=self.device, weights_only=False)
 
         # Reinitialize splats from checkpoint (handles size mismatch from densification)
         ckpt_splats = ckpt["splats"]
@@ -1703,19 +1703,26 @@ class FreeTime4DRunner:
         self.grad_accum = torch.zeros(len(self.splats["means"]), device=self.device)
         self.grad_count = 0
 
-        # Reinitialize optimizers for the new splats (needed for resume training)
+        # Reinitialize optimizers for the new splats (needed for resume training).
+        # Mirror initial optimizer construction: plain Adam with batch-size scaled betas/eps.
         if not self.cfg.export_only:
             cfg = self.cfg
+            BS = cfg.batch_size
+            adam_kwargs = dict(
+                eps=1e-15 / math.sqrt(BS),
+                betas=(1 - BS * (1 - 0.9), 1 - BS * (1 - 0.999)),
+            )
+            lr_scale = math.sqrt(BS)
             self.optimizers = {
-                "means": SelectiveAdam([{"params": self.splats["means"], "lr": cfg.position_lr, "name": "means"}], eps=1e-15),
-                "scales": SelectiveAdam([{"params": self.splats["scales"], "lr": cfg.scales_lr, "name": "scales"}], eps=1e-15),
-                "quats": SelectiveAdam([{"params": self.splats["quats"], "lr": cfg.quats_lr, "name": "quats"}], eps=1e-15),
-                "opacities": SelectiveAdam([{"params": self.splats["opacities"], "lr": cfg.opacities_lr, "name": "opacities"}], eps=1e-15),
-                "sh0": SelectiveAdam([{"params": self.splats["sh0"], "lr": cfg.sh0_lr, "name": "sh0"}], eps=1e-15),
-                "shN": SelectiveAdam([{"params": self.splats["shN"], "lr": cfg.shN_lr, "name": "shN"}], eps=1e-15),
-                "times": SelectiveAdam([{"params": self.splats["times"], "lr": cfg.times_lr, "name": "times"}], eps=1e-15),
-                "durations": SelectiveAdam([{"params": self.splats["durations"], "lr": cfg.durations_lr, "name": "durations"}], eps=1e-15),
-                "velocities": SelectiveAdam([{"params": self.splats["velocities"], "lr": cfg.velocity_lr_start, "name": "velocities"}], eps=1e-15),
+                "means": torch.optim.Adam([{"params": self.splats["means"], "lr": cfg.position_lr * lr_scale, "name": "means"}], **adam_kwargs),
+                "scales": torch.optim.Adam([{"params": self.splats["scales"], "lr": cfg.scales_lr * lr_scale, "name": "scales"}], **adam_kwargs),
+                "quats": torch.optim.Adam([{"params": self.splats["quats"], "lr": cfg.quats_lr * lr_scale, "name": "quats"}], **adam_kwargs),
+                "opacities": torch.optim.Adam([{"params": self.splats["opacities"], "lr": cfg.opacities_lr * lr_scale, "name": "opacities"}], **adam_kwargs),
+                "sh0": torch.optim.Adam([{"params": self.splats["sh0"], "lr": cfg.sh0_lr * lr_scale, "name": "sh0"}], **adam_kwargs),
+                "shN": torch.optim.Adam([{"params": self.splats["shN"], "lr": cfg.shN_lr * lr_scale, "name": "shN"}], **adam_kwargs),
+                "times": torch.optim.Adam([{"params": self.splats["times"], "lr": cfg.times_lr * lr_scale, "name": "times"}], **adam_kwargs),
+                "durations": torch.optim.Adam([{"params": self.splats["durations"], "lr": cfg.durations_lr * lr_scale, "name": "durations"}], **adam_kwargs),
+                "velocities": torch.optim.Adam([{"params": self.splats["velocities"], "lr": cfg.velocity_lr_start * lr_scale, "name": "velocities"}], **adam_kwargs),
             }
 
             # Load optimizer states if available
