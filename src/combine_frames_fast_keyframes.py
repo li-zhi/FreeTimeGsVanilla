@@ -411,6 +411,15 @@ def main():
         "--center-weight", type=float, default=2.0,
         help="Weight for center/foreground points (default: 2.0 = 2x boost)"
     )
+    # Outlier filtering arguments
+    parser.add_argument(
+        "--outlier-percentile", type=float, default=99.5,
+        help="Remove points beyond this percentile distance from centroid (default: 99.5)"
+    )
+    parser.add_argument(
+        "--no-outlier-filter", action="store_true",
+        help="Disable outlier filtering (not recommended)"
+    )
 
     args = parser.parse_args()
 
@@ -527,6 +536,42 @@ def main():
     times = np.concatenate(all_times, axis=0)
     durations = np.concatenate(all_durations, axis=0)
     has_velocity = np.concatenate(all_has_velocity, axis=0)
+
+    # --- Outlier Filtering (percentile-based) ---
+    # Remove points that are far from the scene centroid to avoid
+    # triangulation outliers that corrupt scale estimation
+    if not args.no_outlier_filter:
+        print("\n" + "=" * 70)
+        print("OUTLIER FILTERING")
+        print("=" * 70)
+
+        # Use median as robust centroid (less affected by outliers than mean)
+        centroid = np.median(positions, axis=0)
+        distances = np.linalg.norm(positions - centroid, axis=1)
+
+        # Compute threshold at specified percentile
+        threshold = np.percentile(distances, args.outlier_percentile)
+        inlier_mask = distances <= threshold
+        n_outliers = (~inlier_mask).sum()
+
+        print(f"  Centroid (median): ({centroid[0]:.2f}, {centroid[1]:.2f}, {centroid[2]:.2f})")
+        print(f"  Distance percentiles:")
+        print(f"    50th: {np.percentile(distances, 50):.2f}m")
+        print(f"    95th: {np.percentile(distances, 95):.2f}m")
+        print(f"    99th: {np.percentile(distances, 99):.2f}m")
+        print(f"    99.5th: {np.percentile(distances, 99.5):.2f}m")
+        print(f"    Max: {distances.max():.2f}m")
+        print(f"  Threshold ({args.outlier_percentile}th percentile): {threshold:.2f}m")
+        print(f"  Outliers removed: {n_outliers:,} ({100*n_outliers/len(positions):.3f}%)")
+
+        if n_outliers > 0:
+            positions = positions[inlier_mask]
+            velocities = velocities[inlier_mask]
+            colors = colors[inlier_mask]
+            times = times[inlier_mask]
+            durations = durations[inlier_mask]
+            has_velocity = has_velocity[inlier_mask]
+            print(f"  Points after filtering: {len(positions):,}")
 
     n_total_before_sampling = len(positions)
 

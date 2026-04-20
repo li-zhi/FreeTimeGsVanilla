@@ -388,7 +388,10 @@ class FreeTimeParser:
 
             transform = T2 @ T1
         else:
-            transform = np.eye(4)
+            transform = np.eye(4, dtype=np.float32)
+
+        # Ensure camtoworlds is float32
+        camtoworlds = camtoworlds.astype(np.float32)
 
         # Camera paths (folders containing images)
         images_dir = os.path.join(data_dir, "images")

@@ -400,6 +400,20 @@ class Config:
     """Weight for duration regularization. Penalizes wide temporal windows
     that cause temporal blur. Reduced to 1e-3 to prevent excessively narrow profiles."""
 
+    min_duration: float = -1.0
+    """Minimum allowed duration. Set to -1 to auto-compute as 0.5 * init_duration.
+    Durations below this are clamped to prevent temporal collapse where
+    Gaussians become invisible at most timesteps."""
+
+    clamp_times: bool = True
+    """Whether to clamp canonical times to [0, 1] range during training.
+    Prevents times from drifting outside the valid temporal range."""
+
+    lambda_time_anchor: float = 1e-2
+    """Weight for time anchoring regularization. Penalizes times that drift from
+    their initialization. This prevents all Gaussians from converging to the same time.
+    Higher values = times stay closer to initialization, lower = more flexibility."""
+
     # ==================== Training Phases (Annealing Strategy) ====================
     # NOTE: Per FreeTimeGS paper, we do NOT use warmup/canonical phases that freeze velocity.
     # Freezing velocity destroys ROMA initialization by causing positions to drift to average.
@@ -1428,6 +1442,7 @@ def load_init_npz_keyframe(
         'colors': torch.from_numpy(colors),
         'times': torch.from_numpy(times).unsqueeze(-1),
         'durations': torch.from_numpy(durations).unsqueeze(-1),
+        'computed_init_duration': init_duration,  # Store for duration clamping
     }
 
 
@@ -1515,7 +1530,11 @@ def create_splats_with_optimizers_4d(
         for name, _, lr in params
     }
 
-    return splats, optimizers
+    # Store initial times for anchoring regularization (detached copy)
+    # Squeeze to match shape used in loss computation
+    init_times = times.clone().detach().squeeze(-1).to(device)
+
+    return splats, optimizers, init_times
 
 
 class FreeTime4DRunner:
@@ -1543,10 +1562,12 @@ class FreeTime4DRunner:
         self.writer = SummaryWriter(log_dir=f"{cfg.result_dir}/tb")
 
         # Load dataset
+        # NOTE: normalize=False to keep cameras in original coordinate system
+        # The NPZ points from triangulation are in the same original system
         self.parser = FreeTimeParser(
             data_dir=cfg.data_dir,
             factor=cfg.data_factor,
-            normalize=True,
+            normalize=False,  # Keep original coordinates for NPZ compatibility
             test_every=cfg.test_every,
             start_frame=cfg.start_frame,
             end_frame=cfg.end_frame,
@@ -1628,13 +1649,20 @@ class FreeTime4DRunner:
         valid = dists < max_dist
         print(f"[FreeTime4D] Point filtering: extent={point_extent:.1f}, max_dist={max_dist:.1f}")
 
+        # Store computed init_duration for duration clamping before filtering
+        self.computed_init_duration = init_data.get('computed_init_duration', cfg.init_duration)
+        if self.computed_init_duration < 0:
+            self.computed_init_duration = 0.1  # Fallback default
+
         for key in init_data:
-            init_data[key] = init_data[key][valid]
+            if key != 'computed_init_duration':  # Skip non-tensor values
+                init_data[key] = init_data[key][valid]
 
         print(f"[FreeTime4D] After filtering: {len(init_data['positions']):,} Gaussians")
+        print(f"[FreeTime4D] Computed init_duration: {self.computed_init_duration:.4f}")
 
         # Create splats and optimizers
-        self.splats, self.optimizers = create_splats_with_optimizers_4d(
+        self.splats, self.optimizers, self.init_times = create_splats_with_optimizers_4d(
             cfg, init_data, self.scene_scale, self.device
         )
         print(f"[FreeTime4D] Initialized {len(self.splats['means']):,} Gaussians")
@@ -1957,12 +1985,16 @@ class FreeTime4DRunner:
         From paper: Uses stop-gradient on temporal opacity to prevent minimizing it.
         This encourages Gaussians to have high opacity at their canonical time
         without collapsing temporal opacity to zero.
+
+        Returns NEGATIVE value so that minimizing total loss = maximizing this term.
+        This encourages high base opacity when temporal opacity is high.
         """
         base_opacity = torch.sigmoid(self.splats["opacities"])  # [N]
         # Stop-gradient on temporal opacity - only backprop through base opacity
         temporal_opa_sg = temporal_opacity.detach()  # sg[σ(t)]
-        # Regularization: mean of (σ * sg[σ(t)])
-        reg = (base_opacity * temporal_opa_sg).mean()
+        # Regularization: NEGATIVE mean of (σ * sg[σ(t)])
+        # Negative because we want to MAXIMIZE this (encourage high opacity)
+        reg = -(base_opacity * temporal_opa_sg).mean()
         return reg
 
     def rasterize_splats(
@@ -2371,14 +2403,27 @@ class FreeTime4DRunner:
                 temporal_opacity = info["temporal_opacity"]
                 reg_4d_loss = self.compute_4d_regularization(temporal_opacity)
 
-                # Duration regularization: penalize wide temporal windows (cause blur)
-                # This helps dynamic regions have sharper temporal profiles
+                # Duration regularization: BIDIRECTIONAL - penalize both too wide AND too narrow
+                # Too wide = temporal blur, too narrow = Gaussians invisible at most timesteps
                 if cfg.lambda_duration_reg > 0:
                     durations_exp = torch.exp(self.splats["durations"]).squeeze(-1)
-                    # Penalize durations larger than target
                     target_duration = cfg.init_duration  # 0.1
-                    excess = torch.clamp(durations_exp - target_duration, min=0)
-                    duration_reg_loss = (excess ** 2).mean()
+                    min_duration = cfg.min_duration  # 0.05
+
+                    # Penalize durations larger than target (prevents blur)
+                    excess_large = torch.clamp(durations_exp - target_duration, min=0)
+                    # Penalize durations smaller than minimum (prevents collapse)
+                    excess_small = torch.clamp(min_duration - durations_exp, min=0)
+                    # Combined: both directions
+                    duration_reg_loss = (excess_large ** 2).mean() + (excess_small ** 2).mean()
+
+            # 5. Time anchoring regularization - prevents all times from converging
+            # Penalizes times that drift from their initialization
+            time_anchor_loss = torch.tensor(0.0, device=device)
+            if cfg.lambda_time_anchor > 0 and len(self.init_times) == len(self.splats["times"]):
+                # Only apply if sizes match (before any densification changes count)
+                time_diff = self.splats["times"].squeeze(-1) - self.init_times
+                time_anchor_loss = (time_diff ** 2).mean()
 
             # Combine all losses with paper weights
             # Paper: λimg=0.8, λssim=0.2, λperc=0.01, λreg=1e-2
@@ -2387,9 +2432,10 @@ class FreeTime4DRunner:
             loss_lpips = cfg.lambda_perc * lpips_loss
             loss_4d_reg = cfg.lambda_4d_reg * reg_4d_loss
             loss_dur_reg = cfg.lambda_duration_reg * duration_reg_loss
+            loss_time_anchor = cfg.lambda_time_anchor * time_anchor_loss
 
             # Total loss
-            loss = loss_img + loss_ssim + loss_lpips + loss_4d_reg + loss_dur_reg
+            loss = loss_img + loss_ssim + loss_lpips + loss_4d_reg + loss_dur_reg + loss_time_anchor
 
             # Backward
             loss.backward()
@@ -2408,6 +2454,24 @@ class FreeTime4DRunner:
 
             for sched in schedulers:
                 sched.step()
+
+            # Clamp times to [0, 1] to prevent drift outside valid range
+            if cfg.clamp_times:
+                with torch.no_grad():
+                    self.splats["times"].clamp_(0.0, 1.0)
+
+            # Hard clamp durations to prevent collapse (log-space)
+            # min_duration based on computed_init_duration to ensure temporal coverage
+            # max_duration=0.5 (half the timeline) -> log(0.5) = -0.69
+            with torch.no_grad():
+                # Use computed_init_duration (from keyframe gap) for minimum
+                # This ensures Gaussians have enough temporal extent for overlap
+                min_dur = cfg.min_duration if cfg.min_duration > 0 else (self.computed_init_duration * 0.5)
+                # Ensure minimum is reasonable (at least 0.05)
+                min_dur = max(min_dur, 0.05)
+                min_log_duration = np.log(min_dur)
+                max_log_duration = np.log(0.5)  # Maximum: half the timeline
+                self.splats["durations"].clamp_(min_log_duration, max_log_duration)
 
             # =====================================================================
             # IMPORTANT: Densification disabled until ROMA init settles!
