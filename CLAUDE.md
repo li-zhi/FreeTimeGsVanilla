@@ -124,6 +124,27 @@ CUDA_VISIBLE_DEVICES=0 python src/simple_trainer_freetime_4d_pure_relocation.py 
 
 Available configs: `default_keyframe` (~15M points), `default_keyframe_small` (~4M points).
 
+### Evaluation During Training
+
+At each step in `--eval-steps` (default `[15000, 30000, 45000, 60000]`), the trainer runs a sampled validation pass — not a full val render — so training stays fast.
+
+**Validation split.** Every `--test-every`-th camera (default `8`) is held out from training and used only for validation. With 18 cameras, cameras `0, 8, 16` become the val set; the rest train. The split is computed once in `FreeTime4DRunner.__init__` from the COLMAP camera list.
+
+**Timing.** Eval triggers on the step immediately *before* each value in `--eval-steps` (at step 14999 if 15000 is listed), then training resumes.
+
+**Per-eval procedure** (`FreeTime4DRunner.eval` in `src/simple_trainer_freetime_4d_pure_relocation.py`):
+1. Iterate the val `DataLoader` (batch size 1, no shuffle). Each item is one `(camera, frame)` pair.
+2. Subsample: skip all but every `--eval-sample-every`-th frame (default `60`). E.g., 300 frames × 3 val cameras = 900 items → ~15 actually rendered.
+3. For each sampled item, rasterize Gaussians at that camera pose and time `t` (using the currently-active SH degree), clamp colors to `[0, 1]`.
+4. Save a side-by-side `groundtruth | rendered` PNG to `result_dir/renders/val_step{step}_{i:04d}.png`.
+5. Compute PSNR, SSIM, and LPIPS (network = `--lpips-net`, default `alex`); record per-image GPU wall-clock time.
+6. Aggregate mean PSNR / SSIM / LPIPS, average render time per image (`ellipse_time`), and current Gaussian count (`num_GS`).
+7. Write `result_dir/stats/val_step{step:04d}.json`, push all scalars to TensorBoard under the `val/` prefix, and print a one-line summary.
+
+`eval()` is wrapped in `@torch.no_grad()`.
+
+**Trajectory videos and PLY exports are separate.** Full trajectory videos (`render_traj`) — and PLY sequence exports (`export_ply_sequence`) when `--export-ply` is set — happen at `--save-steps`, not `--eval-steps`, and are not subsampled.
+
 ### Combined Step 1&2 (Keyframe Extraction + Training)
 
 Runs Step 1 and Step 2 back-to-back via a helper script:
