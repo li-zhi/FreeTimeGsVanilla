@@ -426,25 +426,46 @@ class TestEndToEndConversion:
         write_images_binary(images, os.path.join(sparse_dir, 'images.bin'))
         write_points3d_binary(os.path.join(sparse_dir, 'points3D.bin'))
 
-        # Verify with pycolmap
-        rec = pycolmap.Reconstruction(sparse_dir)
+        # Verify with pycolmap — support both the new Reconstruction API
+        # (pycolmap >= 3.10) and the older SceneManager API (the JasonLSC fork
+        # pinned in pyproject.toml only provides SceneManager).
+        K_expected = intri['K_00']
+        if hasattr(pycolmap, 'Reconstruction'):
+            rec = pycolmap.Reconstruction(sparse_dir)
+            cameras_out = rec.cameras
+            images_out = rec.images
+            points_out = rec.points3D
+            cam = cameras_out[1]
+            cam_model_name = cam.model_name
+            cam_width, cam_height = cam.width, cam.height
+            cam_fx, cam_fy, cam_cx, cam_cy = cam.params[0], cam.params[1], cam.params[2], cam.params[3]
+        else:
+            manager = pycolmap.SceneManager(sparse_dir)
+            manager.load_cameras()
+            manager.load_images()
+            manager.load_points3D()
+            cameras_out = manager.cameras
+            images_out = manager.images
+            points_out = manager.points3D
+            cam = cameras_out[1]
+            cam_model_name = pycolmap.Camera.GetNameFromType(cam.camera_type)
+            cam_width, cam_height = cam.width, cam.height
+            cam_fx, cam_fy, cam_cx, cam_cy = cam.fx, cam.fy, cam.cx, cam.cy
 
-        assert len(rec.cameras) == 18
-        assert len(rec.images) == 18
-        assert len(rec.points3D) == 0
+        assert len(cameras_out) == 18
+        assert len(images_out) == 18
+        assert len(points_out) == 0
 
         # Check camera model
-        cam = rec.cameras[1]
-        assert cam.model_name == 'OPENCV'
-        assert cam.width == img_width
-        assert cam.height == img_height
+        assert cam_model_name == 'OPENCV'
+        assert cam_width == img_width
+        assert cam_height == img_height
 
         # Check intrinsics match
-        K_expected = intri['K_00']
-        assert np.isclose(cam.params[0], K_expected[0, 0], rtol=1e-5)  # fx
-        assert np.isclose(cam.params[1], K_expected[1, 1], rtol=1e-5)  # fy
-        assert np.isclose(cam.params[2], K_expected[0, 2], rtol=1e-5)  # cx
-        assert np.isclose(cam.params[3], K_expected[1, 2], rtol=1e-5)  # cy
+        assert np.isclose(cam_fx, K_expected[0, 0], rtol=1e-5)
+        assert np.isclose(cam_fy, K_expected[1, 1], rtol=1e-5)
+        assert np.isclose(cam_cx, K_expected[0, 2], rtol=1e-5)
+        assert np.isclose(cam_cy, K_expected[1, 2], rtol=1e-5)
 
     def test_conversion_creates_correct_directory_structure(self, output_dir):
         """Test that conversion creates the expected directory structure."""
