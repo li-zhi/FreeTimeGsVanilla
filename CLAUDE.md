@@ -271,14 +271,146 @@ Output of Step 1, consumed by Step 2's `--init-npz-path`:
 
 ## Key Training Parameters
 
+Defaults below are the bare `Config` dataclass defaults from `src/simple_trainer_freetime_4d_pure_relocation.py`. Preset configs (`default_keyframe`, `default_keyframe_small`) override several of these — the preset values take effect when you pass the config name as the first positional argument.
+
+### Core Training
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| `--max-steps` | 60000 | Training iterations |
-| `--init-duration` | 0.1 | Initial temporal duration |
-| `--velocity-lr-start` | 5e-3 | Starting velocity LR |
-| `--velocity-lr-end` | 1e-4 | Ending velocity LR |
-| `--lambda-4d-reg` | 1e-3 | 4D regularization weight |
-| `--keyframe-step` | 5 | Frames between keyframes |
+| `--data-dir` | `data/4d_scene` | Dataset directory (images + COLMAP sparse) |
+| `--result-dir` | `results/freetime_4d` | Output directory for ckpts, videos, PLYs, TB logs |
+| `--init-npz-path` | `None` | NPZ from Step 1 with positions, velocities, colors, times |
+| `--max-steps` | `70000` | Total training iterations |
+| `--batch-size` | `1` | Images per iteration |
+| `--steps-scaler` | `1.0` | Scale all step-counted parameters (quick experiments) |
+| `--data-factor` | `1` | Image downsample factor (1 = full resolution) |
+| `--test-every` | `8` | Use every Nth camera for validation |
+| `--eval-steps` | `[15000, 30000, 45000, 60000]` | Validation steps |
+| `--save-steps` | `[15000, 30000, 45000, 60000]` | Checkpoint-save steps |
+
+### Frame Range
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `--start-frame` | `0` | Start frame index (inclusive, t=0 maps here) |
+| `--end-frame` | `300` | End frame index (exclusive, t=1 maps here) |
+| `--frame-step` | `1` | Step between frames when loading |
+
+### Initialization & Sampling
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `--max-samples` | `2000000` | Max Gaussians to initialize from NPZ |
+| `--no-sampling` | `False` | Use ALL NPZ points (overrides max-samples) |
+| `--use-smart-sampling` | `True` | Density-, velocity-, center-weighted downsampling |
+| `--smart-sampling-voxel-size` | `-1.0` | `-1` = auto-estimate from scene scale |
+| `--smart-sampling-velocity-weight` | `5.0` | Moving points boosted up to `(1+w)×` |
+| `--smart-sampling-center-weight` | `2.0` | Points near scene center boosted |
+| `--use-stratified-sampling` | `False` | Sample equally across all frames |
+| `--use-keyframe-sampling` | `False` | Sample densely from keyframes only |
+| `--keyframe-step` | `-1` | `-1` = auto-read from NPZ metadata |
+| `--sample-high-velocity-ratio` | `0.0` | High values (0.8) tend to select noisy outliers |
+
+### Temporal (Duration & Velocity)
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `--init-duration` | `-1.0` | `-1` = auto from NPZ keyframe_step |
+| `--auto-init-duration` | `True` | Compute duration from NPZ (`(kf_step/total) × multiplier`) |
+| `--init-duration-multiplier` | `2.0` | Coverage factor over keyframe gap |
+| `--use-velocity` | `True` | Enable velocity-based motion |
+| `--velocity-lr-start` | `1e-2` | Starting velocity LR (preset configs use `5e-3`) |
+| `--velocity-lr-end` | `1e-4` | Ending velocity LR (annealed) |
+
+### Loss Weights & Regularization
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `--lambda-img` | `0.8` | L1 image reconstruction weight |
+| `--lambda-ssim` | `0.2` | SSIM structural similarity weight |
+| `--lambda-perc` | `0.01` | LPIPS perceptual loss weight |
+| `--lambda-4d-reg` | `1e-3` | 4D regularization weight (paper: `1e-2`) |
+| `--lambda-duration-reg` | `1e-3` | Duration regularization weight |
+
+### Training Phases
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `--densification-start-step` | `1000` | Start densification/relocation/pruning after this step |
+| `--reg-4d-start-step` | `0` | Start 4D regularization from step 0 |
+
+### Densification: Relocation (MCMC-style)
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `--use-relocation` | `True` | Relocate low-opacity Gaussians to high-gradient regions |
+| `--relocation-every` | `100` | Relocate every N iters (after densification-start-step) |
+| `--relocation-stop-iter` | `50000` | Stop relocation after this iter |
+| `--relocation-opacity-threshold` | `0.005` | Gaussians below this are candidates |
+| `--relocation-max-ratio` | `0.015` | Max fraction relocated per step |
+| `--relocation-lambda-grad` | `0.5` | Gradient weight in relocation score |
+| `--relocation-lambda-opa` | `0.5` | Opacity weight in relocation score |
+
+### Densification: Pruning (off by default)
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `--use-pruning` | `False` | Custom pruning (MCMCStrategy already handles this) |
+| `--prune-every` | `500` | Prune every N iters |
+| `--prune-stop-iter` | `20000` | Stop pruning after this iter |
+| `--prune-opacity-threshold` | `0.005` | Opacity floor |
+| `--use-budget-pruning` | `False` | Manual budget pruning (pure-relocation mode) |
+| `--budget-prune-every` | `500` | Budget-prune every N iters |
+| `--budget-prune-threshold` | `0.001` | Aggressive opacity floor for budget pruning |
+
+### Learning Rates
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `--position-lr` | `1.6e-4` | Gaussian positions |
+| `--scales-lr` | `5e-3` | Gaussian scales |
+| `--quats-lr` | `1e-3` | Gaussian rotations |
+| `--opacities-lr` | `5e-2` | Gaussian opacities |
+| `--sh0-lr` | `2.5e-3` | DC SH (base color) |
+| `--shN-lr` | `2.5e-3 / 20` | Higher-order SH |
+| `--times-lr` | `1e-3` | Canonical times |
+| `--durations-lr` | `5e-3` | Temporal durations |
+
+### Rendering & Trajectory
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `--render-traj-path` | `arc` | `arc` / `interp` / `dolly` / `fixed` / `ellipse_z` / `ellipse_y` |
+| `--render-traj-arc-degrees` | `30.0` | Total arc sweep for `arc` path |
+| `--render-traj-dolly-amount` | `0.2` | Dolly distance as fraction of scene scale |
+| `--render-traj-n-frames` | `120` | Video frame count |
+| `--render-traj-fps` | `30` | Video FPS |
+| `--render-traj-time-frames` | `None` | `None` = auto from frame range, `0` = same as n-frames |
+| `--render-traj-camera-loops` | `1` | Camera passes through trajectory while time progresses |
+| `--near-plane` | `0.01` | Near clipping plane |
+| `--far-plane` | `1e10` | Far clipping plane |
+| `--packed` | `False` | Packed rasterization (needed for 8M+ Gaussians) |
+| `--antialiased` | `False` | Antialiased rasterization |
+
+### PLY Export
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `--export-ply` | `False` | Export PLY sequence at end of training |
+| `--export-ply-steps` | `None` | Steps at which to export (`None` = use save-steps) |
+| `--export-ply-format` | `ply` | `ply` / `splat` / `ply_compressed` |
+| `--export-ply-opacity-threshold` | `0.01` | Skip Gaussians below this combined opacity |
+| `--export-ply-compact` | `True` | Factored per-frame export (~15× smaller) |
+| `--export-ply-frame-step` | `1` | Export every Nth frame |
+
+### Model & Misc
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `--sh-degree` | `3` | Max SH degree |
+| `--sh-degree-interval` | `1000` | Steps between SH degree increments |
+| `--init-opacity` | `0.5` | Initial opacity (pre-sigmoid) |
+| `--init-scale` | `1.0` | Scale factor for initial Gaussian sizes |
+| `--global-scale` | `1.0` | Scene global scale factor |
+| `--random-bkgd` | `False` | Randomize background (interferes with 4D temporal opacity) |
+| `--disable-viewer` | `True` | Disable Viser viewer during training |
+| `--lpips-net` | `alex` | `alex` (fast) or `vgg` (slightly more accurate) |
+| `--tb-every` | `50` | Log scalars to TensorBoard every N steps |
+| `--tb-image-every` | `200` | Log images to TensorBoard every N steps |
+
+### Checkpoint / Resume / Export-Only
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `--ckpt-path` | `None` | Path to `.pt` checkpoint to resume or export from |
+| `--export-only` | `False` | With `--ckpt-path`, skip training and just export |
 
 ## Important Notes
 - In every response to me, always start with calling me DUDE
