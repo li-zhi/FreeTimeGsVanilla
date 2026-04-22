@@ -97,10 +97,10 @@ python src/simple_trainer_freetime_4d_pure_relocation.py <config> \
 | `src/simple_trainer_freetime_4d_pure_relocation.py` | Main trainer with 4D Gaussian optimization |
 | `src/combine_frames_fast_keyframes.py` | Keyframe extraction and velocity estimation |
 | `src/triangulate_multiview.py` | Multi-view triangulation for per-frame point clouds |
-| `src/convert_calibration_to_colmap.py` | Convert OpenCV calibration to COLMAP sparse format |
+| `src/convert_calibration_to_colmap.py` | Convert OpenCV calibration to COLMAP (SfM) sparse format |
 | `src/viewer_4d.py` | Interactive viser/nerfview-based viewer |
 | `src/utils.py` | Helpers (KNN, colormap, PLY loading, camera modules) |
-| `datasets/FreeTime_dataset.py` | COLMAP parser and PyTorch dataset |
+| `datasets/FreeTime_dataset.py` | COLMAP (SfM) parser and PyTorch dataset |
 | `datasets/traj.py` | Camera trajectory generation (ellipse, spiral, arc, dolly) |
 | `datasets/normalize.py` | Scene normalization utilities |
 
@@ -170,9 +170,9 @@ data_dir/
 | `--max-matches` | 5000 | Max matches per camera pair |
 | `--reprojection-threshold` | 5.0 | Max reprojection error in pixels |
 
-### Converting OpenCV Calibration to COLMAP Format
+### Converting OpenCV Calibration to COLMAP (SfM) Format
 
-If you have a dataset with OpenCV-style calibration files (`intri.yml`, `extri.yml`), use [src/convert_calibration_to_colmap.py](src/convert_calibration_to_colmap.py) to generate COLMAP sparse reconstruction:
+If you have a dataset with OpenCV-style calibration files (`intri.yml`, `extri.yml`), use [src/convert_calibration_to_colmap.py](src/convert_calibration_to_colmap.py) to generate COLMAP (SfM) sparse reconstruction:
 
 ```bash
 python src/convert_calibration_to_colmap.py \
@@ -266,7 +266,7 @@ data_dir/
 
 - `gsplat` - CUDA Gaussian splatting backend
 - `torch` - PyTorch 2.0+
-- `pycolmap` - COLMAP data loading
+- `pycolmap` - COLMAP (SfM) data loading
 - `viser`, `nerfview` - Interactive viewer
 - `tyro` - CLI configuration
 - `fused_ssim` - Fast SSIM computation
