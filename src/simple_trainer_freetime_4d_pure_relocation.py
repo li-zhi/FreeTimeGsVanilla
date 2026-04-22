@@ -2857,7 +2857,11 @@ class FreeTime4DRunner:
 
         # Render frames
         video_path = f"{video_dir}/traj_4d_step{step}.mp4"
+        duration_video_path = f"{video_dir}/traj_duration_step{step}.mp4"
+        velocity_video_path = f"{video_dir}/traj_velocity_step{step}.mp4"
         writer = imageio.get_writer(video_path, fps=cfg.render_traj_fps)
+        duration_writer = imageio.get_writer(duration_video_path, fps=cfg.render_traj_fps)
+        velocity_writer = imageio.get_writer(velocity_video_path, fps=cfg.render_traj_fps)
 
         for i in tqdm.trange(len(traj_poses_expanded), desc="Rendering trajectory"):
             camtoworlds = traj_poses_expanded[i:i+1]  # [1, 4, 4]
@@ -2881,8 +2885,30 @@ class FreeTime4DRunner:
             frame = (frame * 255).astype(np.uint8)
             writer.append_data(frame)
 
+            # Duration + velocity heatmaps (per-Gaussian scalars → turbo colormap,
+            # composited with per-frame positions/opacities at time t).
+            duration_img, velocity_img = self.render_duration_velocity_images(
+                camtoworlds=camtoworlds,
+                Ks=Ks,
+                width=width,
+                height=height_img,
+                t=t,
+                add_colorbar=True,
+            )
+            dur_frame = duration_img.permute(1, 2, 0).clamp(0, 1).cpu().numpy()
+            dur_frame = (dur_frame * 255).astype(np.uint8)
+            duration_writer.append_data(dur_frame)
+
+            vel_frame = velocity_img.permute(1, 2, 0).clamp(0, 1).cpu().numpy()
+            vel_frame = (vel_frame * 255).astype(np.uint8)
+            velocity_writer.append_data(vel_frame)
+
         writer.close()
+        duration_writer.close()
+        velocity_writer.close()
         print(f"  Video saved to: {video_path}")
+        print(f"  Duration heatmap saved to: {duration_video_path}")
+        print(f"  Velocity heatmap saved to: {velocity_video_path}")
 
     @torch.no_grad()
     def export_ply_sequence(self, step: int):
