@@ -296,11 +296,11 @@ def main():
             print(f"Warning: Missing extrinsics for camera {cam_name}")
             continue
 
-        # COLMAP uses world-to-camera transformation
-        # The calibration appears to be camera-to-world, so we need to invert
-        # R_w2c = R.T, t_w2c = -R.T @ T
-        R_w2c = R.T
-        t_w2c = -R_w2c @ T.flatten()
+        # COLMAP uses world-to-camera transformation.
+        # The OpenCV extri.yml Rot_XX / T_XX are already world-to-camera
+        # (same convention as triangulate_multiview.py: P = K @ [R | t]).
+        R_w2c = R
+        t_w2c = T.flatten()
 
         # Convert to quaternion
         qvec = rotation_matrix_to_quaternion(R_w2c)
