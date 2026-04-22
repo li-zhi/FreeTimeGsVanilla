@@ -213,10 +213,10 @@ output_dir/
 | Parameter | Description |
 |-----------|-------------|
 | `--input-dir` | Directory with intri.yml, extri.yml, and images/ |
-| `--output-dir` | Output directory for COLMAP format |
+| `--output-dir` | Output directory for COLMAP (SfM) format |
 | `--single-frame` | Optional: process only this frame index |
 
-**COLMAP Data** (for trainer - uses nested format):
+**COLMAP (SfM) Data** (for trainer - uses nested format):
 ```
 data_dir/
 ├── images/
