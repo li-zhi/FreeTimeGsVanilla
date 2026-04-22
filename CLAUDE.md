@@ -35,17 +35,74 @@ uv pip install -e . --no-build-isolation
 - If you encounter CUDA version mismatch errors, ensure torch is installed with the correct CUDA version first
 - VSCode Python interpreter is configured in `.vscode/settings.json` to use `.venv/bin/python`
 
-## Common Commands
+## Pipeline Flow
 
-### Full Pipeline (Keyframe Extraction + Training)
-```bash
-bash run_pipeline.sh <input_dir> <data_dir> <result_dir> <start_frame> <end_frame> <keyframe_step> <gpu_id> [config]
+```
+Multi-view dataset (intri.yml, extri.yml, images/)
+          │
+          ├── Preprocessing A  →  per-frame point clouds (.npy)
+          │   triangulate_multiview.py
+          │
+          └── Preprocessing B  →  COLMAP (SfM) sparse reconstruction
+              convert_calibration_to_colmap.py
 
-# Example:
-bash run_pipeline.sh /path/to/triangulation /path/to/colmap /path/to/results 0 61 5 0 default_keyframe_small
+per-frame .npy  ──►  Step 1  ──►  keyframes.npz
+                     combine_frames_fast_keyframes.py
+
+COLMAP + keyframes.npz  ──►  Step 2  ──►  checkpoints, PLY sequences, trajectory videos
+                             simple_trainer_freetime_4d_pure_relocation.py
 ```
 
+`run_pipeline.sh` fuses Step 1 and Step 2 into a single invocation.
+
+## Pipeline Steps
+
+### Preprocessing A: Generate Per-Frame Point Clouds
+
+Triangulate per-frame 3D points from multi-view video with known camera calibration. Consumes a [Multi-View Dataset Layout](#multi-view-dataset-layout), produces a [Per-Frame Point Cloud directory](#per-frame-point-cloud-files).
+
+```bash
+python src/triangulate_multiview.py \
+    --data-dir /path/to/dataset \
+    --output-dir /path/to/triangulation/output \
+    --frame-start 0 --frame-end 30 \
+    --device cuda \
+    --confidence-threshold 0.3 \
+    --max-matches 5000
+```
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `--data-dir` | required | Path to dataset with intri.yml/extri.yml |
+| `--output-dir` | required | Output directory for point clouds |
+| `--frame-start` | 0 | Start frame index |
+| `--frame-end` | None | End frame index (exclusive) |
+| `--use-roma` | True | Use RoMa for matching (falls back to SIFT) |
+| `--use-sift` | False | Force SIFT instead of RoMa |
+| `--confidence-threshold` | 0.3 | Match confidence threshold |
+| `--max-matches` | 5000 | Max matches per camera pair |
+| `--reprojection-threshold` | 5.0 | Max reprojection error in pixels |
+
+### Preprocessing B: Convert OpenCV Calibration to COLMAP (SfM) Format
+
+Convert OpenCV-style calibration (`intri.yml`, `extri.yml`) into a COLMAP sparse reconstruction consumable by the trainer's `--data-dir`. Consumes a [Multi-View Dataset Layout](#multi-view-dataset-layout), produces a [COLMAP (SfM) Nested Layout](#colmap-sfm-nested-layout).
+
+```bash
+python src/convert_calibration_to_colmap.py \
+    --input-dir /path/to/dataset \
+    --output-dir /path/to/colmap/data
+```
+
+| Parameter | Description |
+|-----------|-------------|
+| `--input-dir` | Directory with intri.yml, extri.yml, and images/ |
+| `--output-dir` | Output directory for COLMAP (SfM) format |
+| `--single-frame` | Optional: process only this frame index |
+
 ### Step 1: Combine Keyframes with Velocity
+
+Load per-frame triangulated points, extract keyframes at a regular interval, compute per-point velocity via k-NN matching between consecutive frames, and emit a single NPZ (see [NPZ Format](#npz-format)).
+
 ```bash
 python src/combine_frames_fast_keyframes.py \
     --input-dir /path/to/triangulation/output \
@@ -54,6 +111,9 @@ python src/combine_frames_fast_keyframes.py \
 ```
 
 ### Step 2: Train 4D Gaussians
+
+Initialize 4D Gaussians from the keyframe NPZ, train with gsplat's MCMC/DefaultStrategy, and produce checkpoints, PLY sequences, and trajectory videos. Training follows a two-phase annealing schedule — see [Training Phases](#training-phases-annealing-strategy) and [Key Training Parameters](#key-training-parameters).
+
 ```bash
 CUDA_VISIBLE_DEVICES=0 python src/simple_trainer_freetime_4d_pure_relocation.py <config> \
     --data-dir /path/to/colmap/data \
@@ -62,49 +122,35 @@ CUDA_VISIBLE_DEVICES=0 python src/simple_trainer_freetime_4d_pure_relocation.py 
     --start-frame 0 --end-frame 61 --max-steps 30000
 ```
 
-Available configs: `default_keyframe` (~15M points), `default_keyframe_small` (~4M points)
+Available configs: `default_keyframe` (~15M points), `default_keyframe_small` (~4M points).
+
+### Combined Step 1&2 (Keyframe Extraction + Training)
+
+Runs Step 1 and Step 2 back-to-back via a helper script:
+
+```bash
+bash run_pipeline.sh <input_dir> <data_dir> <result_dir> <start_frame> <end_frame> <keyframe_step> <gpu_id> [config]
+
+# Example:
+bash run_pipeline.sh /path/to/triangulation /path/to/colmap /path/to/results 0 61 5 0 default_keyframe_small
+```
+
+## Other Tools
 
 ### Interactive 4D Viewer
+
 ```bash
 python src/viewer_4d.py --ckpt results/ckpts/ckpt_30000.pt --port 8080 --total-frames 60
 ```
 
 ### Export from Checkpoint (No Training)
+
 ```bash
 python src/simple_trainer_freetime_4d_pure_relocation.py <config> \
     --ckpt-path /path/to/ckpt.pt --export-only
 ```
 
-## Architecture
-
-### Two-Stage Pipeline
-
-1. **Point Cloud Preparation** ([src/combine_frames_fast_keyframes.py](src/combine_frames_fast_keyframes.py))
-   - Loads per-frame triangulated 3D points (`points3d_frameXXXXXX.npy`, `colors_frameXXXXXX.npy`)
-   - Extracts keyframes at specified intervals
-   - Computes velocity via k-NN matching between consecutive frames
-   - Outputs NPZ with positions, velocities, colors, times, durations
-
-2. **4D Gaussian Training** ([src/simple_trainer_freetime_4d_pure_relocation.py](src/simple_trainer_freetime_4d_pure_relocation.py))
-   - Initializes 4D Gaussians from NPZ
-   - Trains with temporal parameters using gsplat's MCMC or DefaultStrategy
-   - Outputs checkpoints, PLY sequences, and trajectory videos
-
-### Key Components
-
-| File | Purpose |
-|------|---------|
-| `src/simple_trainer_freetime_4d_pure_relocation.py` | Main trainer with 4D Gaussian optimization |
-| `src/combine_frames_fast_keyframes.py` | Keyframe extraction and velocity estimation |
-| `src/triangulate_multiview.py` | Multi-view triangulation for per-frame point clouds |
-| `src/convert_calibration_to_colmap.py` | Convert OpenCV calibration to COLMAP (SfM) sparse format |
-| `src/viewer_4d.py` | Interactive viser/nerfview-based viewer |
-| `src/utils.py` | Helpers (KNN, colormap, PLY loading, camera modules) |
-| `datasets/FreeTime_dataset.py` | COLMAP (SfM) parser and PyTorch dataset |
-| `datasets/traj.py` | Camera trajectory generation (ellipse, spiral, arc, dolly) |
-| `datasets/normalize.py` | Scene normalization utilities |
-
-### Training Phases (Annealing Strategy)
+## Training Phases (Annealing Strategy)
 
 1. **Settling Phase** (steps 0 to `densification_start_step`):
    - All 4D parameters enabled from step 0
@@ -118,84 +164,41 @@ python src/simple_trainer_freetime_4d_pure_relocation.py <config> \
 
 **Critical**: Never freeze velocities—this destroys initialization.
 
-### Input Data Format
+## Data Formats
 
-**Per-Frame Point Clouds** (for `combine_frames_fast_keyframes.py`):
+### Multi-View Dataset Layout
+
+Input to Preprocessing A and B. OpenCV-style calibration with per-camera image folders:
+
 ```
-input_dir/
+data_dir/
+├── intri.yml          # Camera intrinsics (K_XX, D_XX — OpenCV YAML format)
+├── extri.yml          # Camera extrinsics (Rot_XX, T_XX matrices)
+└── images/
+    ├── 00/            # Camera 00
+    │   ├── 000000.jpg
+    │   └── ...
+    ├── 01/            # Camera 01
+    └── ...
+```
+
+### Per-Frame Point Cloud Files
+
+Output of Preprocessing A, input to Step 1:
+
+```
+triangulation_output/
 ├── points3d_frame000000.npy   # [M, 3] float32
 ├── colors_frame000000.npy     # [M, 3] float32 (0-255)
 └── ...
 ```
 
-### Generating Per-Frame Point Clouds
+### COLMAP (SfM) Nested Layout
 
-#### Using triangulate_multiview.py
+Output of Preprocessing B, consumed by Step 2's `--data-dir`:
 
-This repository includes [src/triangulate_multiview.py](src/triangulate_multiview.py) for generating per-frame point clouds from multi-view video with known camera calibration.
-
-```bash
-python src/triangulate_multiview.py \
-    --data-dir /path/to/dataset \
-    --output-dir /path/to/output \
-    --frame-start 0 --frame-end 30 \
-    --device cuda \
-    --confidence-threshold 0.3 \
-    --max-matches 5000
 ```
-
-**Input dataset structure:**
-```
-data_dir/
-├── intri.yml          # Camera intrinsics (OpenCV YAML format)
-├── extri.yml          # Camera extrinsics (Rot_XX, T_XX matrices)
-└── images/
-    ├── 00/            # Camera 00
-    │   ├── 000000.jpg
-    │   └── ...
-    ├── 01/            # Camera 01
-    └── ...
-```
-
-**Parameters:**
-| Parameter | Default | Description |
-|-----------|---------|-------------|
-| `--data-dir` | required | Path to dataset with intri.yml/extri.yml |
-| `--output-dir` | required | Output directory for point clouds |
-| `--frame-start` | 0 | Start frame index |
-| `--frame-end` | None | End frame index (exclusive) |
-| `--use-roma` | True | Use RoMa for matching (falls back to SIFT) |
-| `--use-sift` | False | Force SIFT instead of RoMa |
-| `--confidence-threshold` | 0.3 | Match confidence threshold |
-| `--max-matches` | 5000 | Max matches per camera pair |
-| `--reprojection-threshold` | 5.0 | Max reprojection error in pixels |
-
-### Converting OpenCV Calibration to COLMAP (SfM) Format
-
-If you have a dataset with OpenCV-style calibration files (`intri.yml`, `extri.yml`), use [src/convert_calibration_to_colmap.py](src/convert_calibration_to_colmap.py) to generate COLMAP (SfM) sparse reconstruction:
-
-```bash
-python src/convert_calibration_to_colmap.py \
-    --input-dir /path/to/dataset \
-    --output-dir /path/to/output
-```
-
-**Input dataset structure:**
-```
-input_dir/
-├── intri.yml          # Camera intrinsics (K_XX, D_XX matrices)
-├── extri.yml          # Camera extrinsics (Rot_XX, T_XX matrices)
-└── images/
-    ├── 00/            # Camera 00
-    │   ├── 000000.jpg
-    │   └── ...
-    ├── 01/            # Camera 01
-    └── ...
-```
-
-**Output structure (nested format for FreeTimeParser):**
-```
-output_dir/
+colmap_data/
 ├── images/
 │   ├── cam00/                      # Nested camera folders
 │   │   ├── 000000.jpg              # Symlinks to original images
@@ -209,30 +212,11 @@ output_dir/
     └── points3D.bin                # Empty (no triangulation)
 ```
 
-**Parameters:**
-| Parameter | Description |
-|-----------|-------------|
-| `--input-dir` | Directory with intri.yml, extri.yml, and images/ |
-| `--output-dir` | Output directory for COLMAP (SfM) format |
-| `--single-frame` | Optional: process only this frame index |
-
-**COLMAP (SfM) Data** (for trainer - uses nested format):
-```
-data_dir/
-├── images/
-│   ├── cam00/
-│   │   ├── 000000.jpg
-│   │   └── ...
-│   └── cam01/
-└── sparse/0/
-    ├── cameras.bin
-    ├── images.bin
-    └── points3D.bin
-```
-
 **Note:** The FreeTimeParser auto-detects nested vs flat image naming. Images in `images.bin` use the format `cam{XX}/{frame:06d}.jpg` to match the nested folder structure.
 
 ### NPZ Format
+
+Output of Step 1, consumed by Step 2's `--init-npz-path`:
 
 | Field | Shape | Description |
 |-------|-------|-------------|
@@ -261,6 +245,20 @@ data_dir/
     "step": int,
 }
 ```
+
+## File Map
+
+| File | Purpose |
+|------|---------|
+| `src/simple_trainer_freetime_4d_pure_relocation.py` | Main trainer with 4D Gaussian optimization |
+| `src/combine_frames_fast_keyframes.py` | Keyframe extraction and velocity estimation |
+| `src/triangulate_multiview.py` | Multi-view triangulation for per-frame point clouds |
+| `src/convert_calibration_to_colmap.py` | Convert OpenCV calibration to COLMAP (SfM) sparse format |
+| `src/viewer_4d.py` | Interactive viser/nerfview-based viewer |
+| `src/utils.py` | Helpers (KNN, colormap, PLY loading, camera modules) |
+| `datasets/FreeTime_dataset.py` | COLMAP (SfM) parser and PyTorch dataset |
+| `datasets/traj.py` | Camera trajectory generation (ellipse, spiral, arc, dolly) |
+| `datasets/normalize.py` | Scene normalization utilities |
 
 ## Key Dependencies
 
