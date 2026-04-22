@@ -284,5 +284,7 @@ data_dir/
 
 ## Important Notes
 - In every response to me, always start with calling me DUDE
-- When commiting, ignore untracked files
-- When commiting, always save the full prompt messages since the last commit to the commit message
+- When committing, ignore untracked files
+- When committing, always save the full prompt messages since the last commit to the commit message
+- When committing, run code review first
+- When committing, run style check through `ruff check` (if needed, run style fix through `ruff check --fix`)

@@ -2725,7 +2725,7 @@ class FreeTime4DRunner:
         Creates a video that:
         1. Uses half the camera poses to generate a smooth trajectory
         2. Samples time smoothly from 0 to 1 over the video
-        3. Exports as MP4 to result_dir/videos/
+        3. Exports three MP4s (RGB, duration heatmap, velocity heatmap) to result_dir/videos/
 
         New options:
         - render_traj_time_frames: Total time samples (video frames). Set higher to cover all times.
